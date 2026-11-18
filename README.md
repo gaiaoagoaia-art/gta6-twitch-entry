@@ -39,9 +39,12 @@ comparables) and the final (42).
    0.35 × all launches'** — the subset supplies the shape, the global pool
    fattens the tails (a few rolling launches, e.g. Resident Evil Requiem,
    ramp all day to ~12× hour 1 instead).
-3. **Blend and shrink.** The mixture's quantiles are averaged in log space
-   with a normal fit (mean, sd) of the rolling family's L(h), then shrunk
-   20% in log space toward the persistence baseline's quantiles
+3. **Blend, smooth and shrink.** The mixture's quantiles are averaged in log
+   space with a normal fit (mean, sd) of the rolling family's L(h). Adjacent
+   hours are fitted independently from nearly the same pool, so the fitted
+   log-quantile curves are lightly smoothed across neighbouring hours with a
+   [0.25, 0.5, 0.25] kernel, then shrunk 20% in log space toward the
+   persistence baseline's quantiles
    (`p1 · exp(z_τ · 0.15 · √(h−1))`). Hours or cases with no usable
    comparables fall back to that baseline outright. Quantiles are rounded to
    2 decimals, clamped to (0, 1e9], and forced non-decreasing.
@@ -59,10 +62,14 @@ practice games belong to:
 | forecaster | mean pinball loss, rolling-midnight targets | all 37 targets |
 |---|---|---|
 | house persistence baseline | 0.3568 | 0.9296 |
-| **this model** | **0.3045** | 0.7916 |
+| **this model** | **0.3045** | 0.7911 |
 
 On the rolling-midnight targets the model's 90% interval covers 93.8% of
-realised hours and its median's typical miss is 61.8%. (For reference, the
+realised hours and its median's typical miss is 61.7%. The cross-hour
+smoothing is a small, measured win rather than a leap: at full precision it
+moves the rolling-family loss from 0.30450 to 0.30448 and the all-37 loss
+from 0.79156 to 0.79114 — it never hurts either slice, which is why it
+stays. (For reference, the
 house baseline's official practice loss, graded by the server on the four
 practice games, is ≈ 0.387 with a typical miss of ≈ 82.8%; the LOO figures
 above are measured on the comparable launches instead, so they compare models

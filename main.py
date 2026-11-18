@@ -19,10 +19,13 @@ game launches whose full release-day hourly curves ship inside the case file:
     usable launches', which keeps the subset's shape but fattens the tails
     toward the global one (some rolling launches ramp all day instead).
   * The mixture's quantiles are blended (geometric mean) with a normal fit
-    (mean, sd) of the rolling subset's L(h), then shrunk 20% in log space
-    toward the persistence baseline's quantiles, which hedges the small
-    sample. Hours or cases with no usable comparables fall back to that
-    baseline outright.
+    (mean, sd) of the rolling subset's L(h). Adjacent hours are fitted
+    independently from nearly the same data, so the fitted log-quantile
+    curves are then lightly smoothed across neighbouring hours with a
+    [0.25, 0.5, 0.25] kernel, trimming hour-to-hour fitting noise, and the
+    result is shrunk 20% in log space toward the persistence baseline's
+    quantiles, which hedges the small sample. Hours or cases with no usable
+    comparables fall back to that baseline outright.
 
 Everything is a deterministic function of the case file: no randomness, no
 network, standard library only, and a run takes well under a second.
@@ -126,17 +129,14 @@ def mixture_quantile(rolling: list[float], overall: list[float], tau: float) -> 
     return support[-1]
 
 
-def hour_quantiles(
-    p1: float,
-    hour: int,
+def fitted_log_quantiles(
     levels: list[float],
     rolling_ratios: list[float],
     all_ratios: list[float],
-) -> list[float]:
-    """One hour's five quantiles: fitted shape, blended and shrunk, or baseline."""
-    base = baseline_quantiles(p1, hour, levels)
+) -> list[float] | None:
+    """One hour's fitted log-quantile offsets, or None when nothing is usable."""
     if not all_ratios:
-        return base
+        return None
     fitted = []
     for tau in levels:
         log_q = mixture_quantile(rolling_ratios, all_ratios, tau)
@@ -146,11 +146,32 @@ def hour_quantiles(
             normal_q = mean + NORMAL.inv_cdf(tau) * math.sqrt(var)
             log_q = (log_q + normal_q) / 2
         fitted.append(log_q)
-    log_p1 = math.log(p1)
-    out = []
-    for i, log_q in enumerate(fitted):
-        blended = (1 - SHRINK) * (log_p1 + log_q) + SHRINK * math.log(base[i])
-        out.append(math.exp(blended))
+    return fitted
+
+
+def smooth_hours(by_hour: dict[int, list[float]]) -> dict[int, list[float]]:
+    """Lightly smooth fitted log-quantiles across adjacent hours.
+
+    Each hour's fit is estimated independently from almost the same pool of
+    launches, so the hour-to-hour wiggle in the fitted curves is mostly
+    fitting noise. A [0.25, 0.5, 0.25] kernel over neighbouring hours trades
+    a little hour-specific shape for lower variance; edge hours renormalise
+    over the neighbours they have.
+    """
+    hours = sorted(by_hour)
+    out = {}
+    for i, hour in enumerate(hours):
+        acc = None
+        wsum = 0.0
+        for j, w in ((i - 1, 0.25), (i, 0.5), (i + 1, 0.25)):
+            if 0 <= j < len(hours):
+                vals = by_hour[hours[j]]
+                if acc is None:
+                    acc = [w * v for v in vals]
+                else:
+                    acc = [a + w * v for a, v in zip(acc, vals)]
+                wsum += w
+        out[hour] = [a / wsum for a in acc]
     return out
 
 
@@ -185,16 +206,28 @@ def forecast_case(case: dict) -> dict:
             if roll:
                 rolling.setdefault(hour, []).append(value)
 
-    rows = []
-    for row in case.get("forecast") or []:
-        hour = int(row["hour"])
-        qs = hour_quantiles(
-            p1,
-            hour,
+    hours = [int(row["hour"]) for row in case.get("forecast") or []]
+    fitted = {}
+    for hour in hours:
+        fq = fitted_log_quantiles(
             levels,
             sorted(rolling.get(hour, [])),
             sorted(overall.get(hour, [])),
         )
+        if fq is not None:
+            fitted[hour] = fq
+    fitted = smooth_hours(fitted)
+    log_p1 = math.log(p1)
+    rows = []
+    for hour in hours:
+        base = baseline_quantiles(p1, hour, levels)
+        if hour in fitted:
+            qs = [
+                math.exp((1 - SHRINK) * (log_p1 + lq) + SHRINK * math.log(b))
+                for lq, b in zip(fitted[hour], base)
+            ]
+        else:
+            qs = base
         rows.append({"hour": hour, "q": tidy(qs)})
     return {"hours": rows}
 
